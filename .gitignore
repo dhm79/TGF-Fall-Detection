@@ -1,0 +1,14 @@
+# Dataset (NO subir)
+Train/
+Validation/
+
+# Python
+__pycache__/
+*.pyc
+
+# Outputs
+outputs/
+
+# Otros
+*.log
+*.tmp
