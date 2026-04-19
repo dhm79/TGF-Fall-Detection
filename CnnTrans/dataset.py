@@ -5,8 +5,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-
-# Esta clase hereda de Dataset de PyTorch
+# Esta clase recibe los clips de utils y los prepara para entrar al modelo
+# Hereda de Dataset de PyTorch
 # Sirve para definir cómo se cargan y procesan los datos
 class TF66ClipDataset(Dataset):
 

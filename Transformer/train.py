@@ -4,7 +4,7 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -14,33 +14,27 @@ from sklearn.metrics import (
 )
 
 from dataset import TF66ClipDataset
-from utils import build_tf66_clips
-from model_transformer import TransformerFallNet
+from utils import build_tf66_samples, load_tf66_video_info
+from model import FallTransformer
 
 
-# =========================
-# CONFIGURACIÓN
-# =========================
 TRAIN_DIR = "../Train"
 VAL_DIR = "../Validation"
+EXCEL_PATH = "../Final Dataset.xlsx"
 
 OUTPUT_DIR = "./outputs"
 
 SEQ_LEN = 10
-STRIDE = 20          # antes 10; subido para que no genere tantos clips
-IMG_SIZE = 96
-BATCH_SIZE = 2
-EPOCHS = 10
-LR = 1e-4
+IMG_SIZE = 128          # En CPU, 128 es bastante más razonable que 256
+BATCH_SIZE = 1          # Para Transformer en CPU, mejor empezar con 1
+EPOCHS = 200
+LR = 5e-5
 WEIGHT_DECAY = 1e-5
 NUM_WORKERS = 0
 SEED = 42
 THRESHOLD = 0.5
 
 
-# =========================
-# UTILIDADES
-# =========================
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -112,71 +106,64 @@ def validate(model, loader, criterion, device, threshold):
 
     metrics = compute_metrics(y_true, y_prob, threshold=threshold)
     metrics["loss"] = total_loss / len(loader)
+
+    pos_rate = np.mean(np.array(y_prob) >= threshold)
+    print(f"Val positive prediction rate: {pos_rate:.4f}")
+
     return metrics
 
 
-# =========================
-# MAIN
-# =========================
 def main():
     set_seed(SEED)
     ensure_dir(OUTPUT_DIR)
 
-    device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Usando dispositivo: {device}")
 
-    # -------------------------
-    # Generar clips
-    # -------------------------
-    train_clips = build_tf66_clips(TRAIN_DIR, seq_len=SEQ_LEN, stride=STRIDE)
-    val_clips = build_tf66_clips(VAL_DIR, seq_len=SEQ_LEN, stride=STRIDE)
+    if not os.path.exists(EXCEL_PATH):
+        raise FileNotFoundError(f"No se encontró el Excel: {EXCEL_PATH}")
 
-    print(f"Train clips: {len(train_clips)}")
-    print(f"Val clips: {len(val_clips)}")
+    video_info = load_tf66_video_info(EXCEL_PATH)
 
-    if len(train_clips) == 0:
-        raise ValueError("No se encontraron clips de entrenamiento.")
-    if len(val_clips) == 0:
-        raise ValueError("No se encontraron clips de validación.")
+    train_samples = build_tf66_samples(TRAIN_DIR, EXCEL_PATH, seq_len=SEQ_LEN)
+    val_samples = build_tf66_samples(VAL_DIR, EXCEL_PATH, seq_len=SEQ_LEN)
 
-    # -------------------------
-    # Balance de clases en clips
-    # -------------------------
-    labels = [int(c["label"]) for c in train_clips]
-    pos = sum(labels)                 # Fall = 1
-    neg = len(labels) - pos           # NonFall = 0
+    print(f"Train samples: {len(train_samples)}")
+    print(f"Val samples: {len(val_samples)}")
 
-    print(f"Fall train clips: {pos}")
-    print(f"NonFall train clips: {neg}")
+    if len(train_samples) == 0:
+        raise ValueError("No se encontraron samples de entrenamiento.")
+    if len(val_samples) == 0:
+        raise ValueError("No se encontraron samples de validación.")
+
+    labels = [int(s["label"]) for s in train_samples]
+    pos = sum(labels)
+    neg = len(labels) - pos
+
+    print(f"Fall train samples: {pos}")
+    print(f"NonFall train samples: {neg}")
     print(f"threshold: {THRESHOLD}")
-    print(f"stride: {STRIDE}")
+    print(f"seq_len: {SEQ_LEN}")
+    print(f"img_size: {IMG_SIZE}")
 
-    # -------------------------
-    # Dataset
-    # -------------------------
-    train_ds = TF66ClipDataset(train_clips, img_size=IMG_SIZE)
-    val_ds = TF66ClipDataset(val_clips, img_size=IMG_SIZE)
-
-    # -------------------------
-    # Sampler balanceado
-    # -------------------------
-    class_counts = np.array([neg, pos], dtype=np.float32)
-    class_weights = 1.0 / class_counts
-    sample_weights = [class_weights[label] for label in labels]
-
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True
+    train_ds = TF66ClipDataset(
+        train_samples,
+        video_info=video_info,
+        img_size=IMG_SIZE,
+        random_sampling=True
     )
 
-    # -------------------------
-    # DataLoaders
-    # -------------------------
+    val_ds = TF66ClipDataset(
+        val_samples,
+        video_info=video_info,
+        img_size=IMG_SIZE,
+        random_sampling=False
+    )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=BATCH_SIZE,
-        sampler=sampler,
+        shuffle=True,
         num_workers=NUM_WORKERS
     )
 
@@ -187,38 +174,27 @@ def main():
         num_workers=NUM_WORKERS
     )
 
-    # -------------------------
-    # Modelo
-    # -------------------------
-
-
-        # PARA PC CON GPU  
-    # 
-    # TransformerFallNet(
-    #   feature_dim=256,
-    #   num_heads=8,
-    #   num_layers=4,
-    #   ff_dim=512,
-    #   dropout=0.3
-    # )
-    #
-
-    model = TransformerFallNet(
-        feature_dim=128,
+    model = FallTransformer(
+        img_size=IMG_SIZE,
+        patch_size=16,
+        seq_len=SEQ_LEN,
+        embed_dim=64,
+        spatial_depth=1,
+        temporal_depth=1,
         num_heads=4,
-        num_layers=2,
-        ff_dim=256,
-        dropout=0.3
+        dropout=0.1
     ).to(device)
 
+
     criterion = nn.BCEWithLogitsLoss()
+
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=LR,
         weight_decay=WEIGHT_DECAY
     )
 
-    best_mcc = -1.0
+    best_mcc = float("-inf")
 
     history = {
         "train_loss": [],
