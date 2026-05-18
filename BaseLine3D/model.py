@@ -68,6 +68,7 @@ class TF66Baseline3DCNN(nn.Module):
         self.pool3 = nn.MaxPool3d(kernel_size=(1, 2, 2))
         self.drop3 = nn.Dropout(p=0.25)
 
+
         # 128 * 4 * 30 * 30 = 460800
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(460800, 64)

@@ -13,8 +13,7 @@ class TF66ClipDataset(Dataset):
 
     Idea general:
     - Fall:
-        usamos la metadata del Excel para elegir una ventana válida
-        que incluya la caída y su contexto.
+        usamos la info del Excel para elegir una ventana válida que incluya la caída y su contexto.
     - NonFall:
         elegimos una ventana válida cualquiera dentro del vídeo.
 
@@ -123,7 +122,7 @@ class TF66ClipDataset(Dataset):
 
         CASO FALL
         ---------
-        Se usa la metadata del Excel:
+        Se usa la info del Excel:
         - framesBeforeFall
         - framesAfterFall
         - firstFallFrameOfVideo

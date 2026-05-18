@@ -61,13 +61,13 @@ El sistema sigue los siguientes pasos:
 
 ## Modelos implementados
 
-### CNN + GRU
+### BASELINE 3D CNN
 
 * Modelo base
 * Captura dependencias temporales secuenciales
 * Más ligero y rápido
 
-### CNN + Transformer
+### Transformer
 
 * Modelo avanzado
 * Captura relaciones globales entre frames

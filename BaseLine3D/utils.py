@@ -8,7 +8,7 @@ def load_tf66_video_info(excel_path):
     Carga la metadata del Excel original de TF-66.
 
     IMPORTANTE:
-    En tu Excel la cabecera real está en la fila 3,
+    En el Excel la cabecera real está en la fila 3,
     por eso usamos header=2.
 
     Devuelve un diccionario así:

@@ -108,7 +108,7 @@ class TemporalTransformerEncoder(nn.Module):
     def __init__(
         self,
         seq_len=10,
-        embed_dim=128,
+        embed_dim=96,
         num_heads=4,
         depth=2,
         mlp_ratio=4.0,

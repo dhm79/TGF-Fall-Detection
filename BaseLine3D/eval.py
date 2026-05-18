@@ -43,7 +43,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     confusion_matrix,
-    matthews_corrcoef
+    matthews_corrcoef,
 )
 
 from dataset import TF66ClipDataset
@@ -55,18 +55,13 @@ from model import TF66Baseline3DCNN
 # RUTAS RELATIVAS
 # ============================================================
 
-# Carpeta donde está este archivo eval.py
 BASE_DIR = Path(__file__).resolve().parent
-
-# Carpeta raíz TF66 (la carpeta padre de BaseLine3D)
 TF66_ROOT = BASE_DIR.parent
 
-# Subcarpetas / archivos reales del proyecto
 VAL_DIR = TF66_ROOT / "Validation"
 EXCEL_PATH = TF66_ROOT / "Final Dataset.xlsx"
 OUTPUT_DIR = BASE_DIR / "outputs"
 
-# Modelo guardado durante train.py
 MODEL_PATH = OUTPUT_DIR / "best_model.pth"
 
 
@@ -74,7 +69,6 @@ MODEL_PATH = OUTPUT_DIR / "best_model.pth"
 # HIPERPARÁMETROS
 # ============================================================
 
-# Deben coincidir con los usados en train.py
 SEQ_LEN = 10
 IMG_SIZE = 256
 BATCH_SIZE = 16
@@ -98,6 +92,9 @@ def set_seed(seed=42):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 
 def ensure_dir(path):
     """
@@ -118,7 +115,9 @@ def compute_metrics(y_true, y_prob, threshold=0.5):
     """
     Convierte probabilidades en predicciones binarias y calcula métricas.
     """
-    y_pred = [1 if p >= threshold else 0 for p in y_prob]
+    y_true = np.array(y_true).astype(int)
+    y_prob = np.array(y_prob, dtype=np.float32)
+    y_pred = (y_prob >= threshold).astype(int)
 
     return {
         "accuracy": accuracy_score(y_true, y_pred),
@@ -126,8 +125,21 @@ def compute_metrics(y_true, y_prob, threshold=0.5):
         "precision": precision_score(y_true, y_pred, zero_division=0),
         "recall": recall_score(y_true, y_pred, zero_division=0),
         "mcc": matthews_corrcoef(y_true, y_pred),
-        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist()
+        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
     }
+
+
+def load_model_weights(model, model_path, device):
+    """
+    Carga pesos del modelo. Usa weights_only=True si la versión de PyTorch lo soporta.
+    """
+    try:
+        state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    except TypeError:
+        state_dict = torch.load(model_path, map_location=device)
+
+    model.load_state_dict(state_dict)
+    return model
 
 
 # ============================================================
@@ -135,18 +147,14 @@ def compute_metrics(y_true, y_prob, threshold=0.5):
 # ============================================================
 
 def main():
-    """
-    Flujo principal de evaluación.
-    """
     set_seed(SEED)
     ensure_dir(OUTPUT_DIR)
 
-    # Elegimos dispositivo automáticamente
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Usando dispositivo: {device}")
 
     # --------------------------------------------------------
-    # 1) Comprobar que existen el modelo y el Excel
+    # 1) Comprobar rutas
     # --------------------------------------------------------
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"No se encontró el modelo: {MODEL_PATH}")
@@ -154,51 +162,51 @@ def main():
     if not EXCEL_PATH.exists():
         raise FileNotFoundError(f"No se encontró el Excel: {EXCEL_PATH}")
 
+    if not VAL_DIR.exists():
+        raise FileNotFoundError(f"No se encontró la carpeta Validation: {VAL_DIR}")
+
     # --------------------------------------------------------
     # 2) Cargar metadata temporal del Excel
     # --------------------------------------------------------
-    # Esto devuelve información de los vídeos Fall:
-    # framesBeforeFall, framesAfterFall, firstFallFrameOfVideo
     video_info = load_tf66_video_info(EXCEL_PATH)
 
     # --------------------------------------------------------
     # 3) Construir muestras de Validation
     # --------------------------------------------------------
-    # build_tf66_samples() recorre:
-    #   Validation/Fall
-    #   Validation/NonFall
-    # y construye una lista de muestras a nivel de vídeo.
     val_samples = build_tf66_samples(VAL_DIR, EXCEL_PATH, seq_len=SEQ_LEN)
 
     if len(val_samples) == 0:
         raise ValueError("No se encontraron samples en Validation.")
 
     print(f"Validation samples: {len(val_samples)}")
+    print(f"Modelo cargado desde: {MODEL_PATH}")
+    print(f"Seq len  : {SEQ_LEN}")
+    print(f"Img size : {IMG_SIZE}")
+    print(f"Threshold: {THRESHOLD}")
 
     # --------------------------------------------------------
     # 4) Crear Dataset y DataLoader
     # --------------------------------------------------------
-    # En evaluación usamos random_sampling=False para que la selección
-    # del clip sea determinista y no cambie en cada ejecución.
     val_ds = TF66ClipDataset(
         val_samples,
         video_info=video_info,
         img_size=IMG_SIZE,
-        random_sampling=False
+        random_sampling=False,
     )
 
     val_loader = DataLoader(
         val_ds,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=NUM_WORKERS
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
     )
 
     # --------------------------------------------------------
     # 5) Crear modelo y cargar pesos
     # --------------------------------------------------------
     model = TF66Baseline3DCNN().to(device)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    model = load_model_weights(model, MODEL_PATH, device)
     model.eval()
 
     # --------------------------------------------------------
@@ -211,19 +219,23 @@ def main():
         for x, y in val_loader:
             x = x.to(device)
 
-            # logits: salida cruda del modelo
             logits = model(x)
+            probs = torch.sigmoid(logits).detach().cpu().numpy().flatten()
 
-            # Convertimos logits a probabilidades con sigmoide
-            probs = torch.sigmoid(logits).cpu().numpy().flatten()
-
-            y_true.extend(y.numpy().flatten())
+            y_true.extend(y.detach().cpu().numpy().flatten())
             y_prob.extend(probs)
 
     # --------------------------------------------------------
     # 7) Calcular métricas finales
     # --------------------------------------------------------
     metrics = compute_metrics(y_true, y_prob, threshold=THRESHOLD)
+
+    metrics["threshold"] = THRESHOLD
+    metrics["seq_len"] = SEQ_LEN
+    metrics["img_size"] = IMG_SIZE
+    metrics["batch_size"] = BATCH_SIZE
+    metrics["num_validation_samples"] = len(val_samples)
+    metrics["model_path"] = str(MODEL_PATH)
 
     print("\n=== RESULTADOS EN VALIDATION ===")
     print(f"Accuracy : {metrics['accuracy']:.4f}")
